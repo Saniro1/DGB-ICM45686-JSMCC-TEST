@@ -28,7 +28,7 @@ Pinned toolchain: Arduino CLI 1.2.2, Arduino-Pico 5.4.4, bundled TinyUSB. Networ
 
 ## Calibration and hardware acceptance
 
-Place the device completely still before connecting it. Startup collects at least 1000 fresh samples per initialized sensor and at least one second of stable data. Initial gyro output stays neutral until calibration succeeds. Open the USB serial monitor at 115200 and send `?` for sensor/calibration status. Send `c` while completely stationary to recalibrate after warming up. Calibration times out after ten seconds; retry if it fails. Constant slow rotation about gravity cannot be reliably distinguished from zero-rate bias, so stationary placement is essential.
+Place the device completely still before connecting it. Startup collects at least 1000 fresh samples per initialized sensor and at least one second of stable data. Motion stays live even if calibration fails; retry calibration while stationary to remove bias. Open the USB serial monitor at 115200 and send `?` for sensor/calibration status. Send `c` while completely stationary to recalibrate after warming up. Calibration times out after ten seconds; retry if it fails. Constant slow rotation about gravity cannot be reliably distinguished from zero-rate bias, so stationary placement is essential.
 
 Startup calibration measures gyro offsets only. Actual accelerometer offset/gain calibration requires six measured +X/-X/+Y/-Y/+Z/-Z gravity poses; no fabricated coefficients are applied. In each pose verify approximately 1 g total magnitude and the expected signed axis. Rotate about each axis independently and confirm gyro direction, then check warm stationary drift for several minutes.
 

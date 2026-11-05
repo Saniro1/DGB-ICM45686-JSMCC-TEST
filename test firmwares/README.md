@@ -8,7 +8,7 @@ Target: Waveshare RP2040-Zero with two equally oriented ICM-45686 sensors and th
 2. Hold BOOT while connecting the RP2040 by USB, then release it.
 3. Copy `DGB_ICM45686_calibration_DS4_1kHz_TEST.uf2` to the RPI-RP2 drive.
 4. Let the device reboot. Leave it completely still for calibration.
-5. Open the serial monitor at 115200 and send `?`. Confirm calibration is complete and both IMUs are OK. If calibration fails, leave the device still and send `c` to retry. Gyro output remains neutral until initial calibration succeeds.
+5. Open the serial monitor at 115200 and send `?`. Confirm calibration is complete and both IMUs are OK. If calibration fails, leave the device still and send `c` to retry. In v1, gyro output remains neutral until initial calibration succeeds; v2 removes this lockout.
 
 Check each rotation axis, stationary drift after warmup, gravity magnitude (approximately 1 g), touch operation and actual host report arrivals. Startup calibration corrects gyro bias; accelerometer six-face offset/gain calibration remains a hardware measurement task.
 

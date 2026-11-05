@@ -11,7 +11,7 @@ static DS4InputReport ds4Report;
 static ReportSchedule reportSchedule;
 static uint32_t lastMotionUs, lastTouchUs, startedUs;
 static uint32_t submittedReports, freshSamples, staleReports, longestSendGapUs, lastSentUs;
-static bool touched, calibrated, haveMotion;
+static bool touched, haveMotion;
 static ImuCalibrationState previousCalibration = ImuCalibrationState::Idle;
 static char serialReply[512];
 static size_t replyOffset, replyLength;
@@ -81,16 +81,16 @@ void loop() {
     const ImuCalibrationState state = imu.calibrationState();
     if (state == ImuCalibrationState::Complete && previousCalibration != state) {
       gyroFilter.reset();
-      calibrated = true;
     }
     const MotionVector gyro = ds4Gyro({motion.gx, motion.gy, motion.gz}, IMU_COUNTS_PER_DPS);
     const MotionVector accel = ds4Accel({motion.ax, motion.ay, motion.az}, IMU_COUNTS_PER_G);
     float gx, gy, gz;
     gyroFilter.process(gyro.x, gyro.y, gyro.z, gx, gy, gz, elapsed ? elapsed : 1U);
-    // Before first successful calibration emit neutral gyro. Gravity stays live.
-    ds4Report.gyro_x = calibrated ? motionCount(gx) : 0;
-    ds4Report.gyro_y = calibrated ? motionCount(gy) : 0;
-    ds4Report.gyro_z = calibrated ? motionCount(gz) : 0;
+    // Calibration must never disable motion. Until calibration succeeds, the
+    // driver uses zero bias (or the last good bias on a subsequent attempt).
+    ds4Report.gyro_x = motionCount(gx);
+    ds4Report.gyro_y = motionCount(gy);
+    ds4Report.gyro_z = motionCount(gz);
     ds4Report.accel_x = motionCount(accel.x);
     ds4Report.accel_y = motionCount(accel.y);
     ds4Report.accel_z = motionCount(accel.z);
