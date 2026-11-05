@@ -3,162 +3,123 @@
 #include "touch_sensor.h"
 #include "usb_ds4_hid.h"
 #include "gyro_drift_filter.h"
+#include "motion_pipeline.h"
+#include <stdio.h>
 
 static GyroDriftFilter gyroFilter;
-
 static DS4InputReport ds4Report;
-static uint32_t lastReportUs = 0;
-static uint16_t reportCounter = 0;
+static ReportSchedule reportSchedule;
+static uint32_t lastMotionUs, lastTouchUs, startedUs;
+static uint32_t submittedReports, freshSamples, staleReports, longestSendGapUs, lastSentUs;
+static bool touched, calibrated, haveMotion;
+static ImuCalibrationState previousCalibration = ImuCalibrationState::Idle;
+static char serialReply[512];
+static size_t replyOffset, replyLength;
 
-// First-order low-pass filters. Lower alpha means stronger smoothing.
-static float filteredGyroX = 0.0f;
-static float filteredGyroY = 0.0f;
-static float filteredGyroZ = 0.0f;
-static float filteredAccelX = 0.0f;
-static float filteredAccelY = 0.0f;
-static float filteredAccelZ = 0.0f;
-static bool motionFilterInitialized = false;
-
-// Three-sample median rejects isolated one-sample spikes without averaging
-// across the full movement signal. Applied only to roll and accelerometer.
-static float previousGyroZ1 = 0.0f;
-static float previousGyroZ2 = 0.0f;
-static float previousAccelX1 = 0.0f, previousAccelX2 = 0.0f;
-static float previousAccelY1 = 0.0f, previousAccelY2 = 0.0f;
-static float previousAccelZ1 = 0.0f, previousAccelZ2 = 0.0f;
-static uint8_t spikeFilterSamples = 0;
-
-static float medianOfThree(float a, float b, float c) {
-  if (a > b) { float t = a; a = b; b = t; }
-  if (b > c) { float t = b; b = c; c = t; }
-  if (a > b) { float t = a; a = b; b = t; }
-  return b;
+static const char *calibrationName(ImuCalibrationState state) {
+  switch (state) {
+    case ImuCalibrationState::Idle: return "idle";
+    case ImuCalibrationState::Collecting: return "collecting: keep stationary";
+    case ImuCalibrationState::Complete: return "complete";
+    case ImuCalibrationState::TimedOut: return "failed: motion, missing data, or bad gravity; send c to retry";
+  }
+  return "unknown";
 }
-
+static void queueStatus() {
+  const ImuBiasOffsets b1 = imu.sensorBias(0), b2 = imu.sensorBias(1);
+  const int n = snprintf(serialReply, sizeof(serialReply),
+      "IMU1=%s IMU2=%s calibration=%s\r\n"
+      "bias1_counts=%.3f,%.3f,%.3f bias2_counts=%.3f,%.3f,%.3f\r\n"
+      "window_samples=%lu,%lu uptime_ms=%lu queued=%lu fresh=%lu stale_reports=%lu max_queue_gap_us=%lu\r\n"
+      "c: stationary gyro recalibration; ?: status. Measure host arrival rate with USB capture.\r\n",
+      imu.sensorOk(0) ? "OK" : "FAIL", imu.sensorOk(1) ? "OK" : "FAIL",
+      calibrationName(imu.calibrationState()),
+      double(b1.gx), double(b1.gy), double(b1.gz), double(b2.gx), double(b2.gy), double(b2.gz),
+      (unsigned long)imu.calibrationSamples(0), (unsigned long)imu.calibrationSamples(1),
+      (unsigned long)((micros() - startedUs) / 1000U), (unsigned long)submittedReports,
+      (unsigned long)freshSamples, (unsigned long)staleReports, (unsigned long)longestSendGapUs);
+  replyLength = n > 0 ? (size_t(n) < sizeof(serialReply) ? size_t(n) : sizeof(serialReply) - 1) : 0;
+  replyOffset = 0;
+}
+static void serviceSerial() {
+  if (Serial.available()) {
+    const int command = Serial.read();
+    if (command == 'c' && imu.calibrationState() != ImuCalibrationState::Collecting) {
+      imu.startCalibration();
+      queueStatus();
+    } else if (command == '?') queueStatus();
+  }
+  // Bounded writes: diagnostics and a closed monitor cannot stall HID.
+  if (Serial && replyOffset < replyLength) {
+    const int room = Serial.availableForWrite();
+    if (room > 0) {
+      size_t length = replyLength - replyOffset;
+      if (length > size_t(room)) length = size_t(room);
+      if (length > 32) length = 32;
+      replyOffset += Serial.write((const uint8_t *)serialReply + replyOffset, length);
+    }
+  }
+}
 void setup() {
   Serial.begin(115200);
   touchSensor.begin();
   usbDs4.begin();
-
-  bool imuOk = imu.begin();
-  Serial.println("Dual ICM-45686 DGB");
-  Serial.print("IMU1 WHO_AM_I=0x");
-  Serial.print(imu.whoAmI(0), HEX);
-  Serial.println(imu.sensorOk(0) ? " OK" : " FAIL");
-  Serial.print("IMU2 WHO_AM_I=0x");
-  Serial.print(imu.whoAmI(1), HEX);
-  Serial.println(imu.sensorOk(1) ? " OK" : " FAIL");
-
-  if (!imuOk) {
-    Serial.println("Check 3V3/GND and SPI: GP0 MISO, GP1 CS1, GP2 SCK, GP3 MOSI, GP5 CS2");
-  }
-
-  Serial.println("Keep unit stationary: calibrating");
-  imu.calibrateRestingOffsets();
-
-  memset(&ds4Report, 0, sizeof(ds4Report));
-  ds4Report.lx = ds4Report.ly = ds4Report.rx = ds4Report.ry = 128;
-  ds4Report.buttons1 = 0x08;
-  ds4Report.battery = 0x0B;
-  lastReportUs = micros();
+  imu.begin();
+  usbDs4.initializeReport(ds4Report);
+  startedUs = lastMotionUs = lastTouchUs = micros();
+  reportSchedule.reset(startedUs);
+  imu.startCalibration();
+  queueStatus();
 }
-
 void loop() {
+  ImuMotionData motion;
+  if (imu.readFusedMotion(motion)) {
+    const uint32_t now = micros();
+    const uint32_t elapsed = now - lastMotionUs;
+    lastMotionUs = now;
+    ++freshSamples;
+    const ImuCalibrationState state = imu.calibrationState();
+    if (state == ImuCalibrationState::Complete && previousCalibration != state) {
+      gyroFilter.reset();
+      calibrated = true;
+    }
+    const MotionVector gyro = ds4Gyro({motion.gx, motion.gy, motion.gz}, IMU_COUNTS_PER_DPS);
+    const MotionVector accel = ds4Accel({motion.ax, motion.ay, motion.az}, IMU_COUNTS_PER_G);
+    float gx, gy, gz;
+    gyroFilter.process(gyro.x, gyro.y, gyro.z, gx, gy, gz, elapsed ? elapsed : 1U);
+    // Before first successful calibration emit neutral gyro. Gravity stays live.
+    ds4Report.gyro_x = calibrated ? motionCount(gx) : 0;
+    ds4Report.gyro_y = calibrated ? motionCount(gy) : 0;
+    ds4Report.gyro_z = calibrated ? motionCount(gz) : 0;
+    ds4Report.accel_x = motionCount(accel.x);
+    ds4Report.accel_y = motionCount(accel.y);
+    ds4Report.accel_z = motionCount(accel.z);
+    haveMotion = true;
+  }
+  const ImuCalibrationState state = imu.calibrationState();
+  if (state != previousCalibration) {
+    previousCalibration = state;
+    queueStatus();
+  }
   uint32_t now = micros();
-  // Keep a fixed 1020 us schedule (~980 Hz) instead of restarting the
-  // timer from 'now'. Restarting from 'now' adds all processing time to every
-  // period and can pull the actual report rate below the target.
-  constexpr uint32_t HID_REPORT_PERIOD_US = 1020;
-  uint32_t elapsedUs = (uint32_t)(now - lastReportUs);
-  if (elapsedUs < HID_REPORT_PERIOD_US) {
-    return;
+  if (uint32_t(now - lastTouchUs) >= 4000U) {
+    touched = touchSensor.readTouch();
+    lastTouchUs = now;
   }
-
-  // Advance the scheduled deadline, preserving the long-term 980 Hz cadence.
-  // If execution was delayed by more than one full period, resynchronize
-  // rather than emitting a burst of catch-up reports.
-  if (elapsedUs >= (HID_REPORT_PERIOD_US * 2U)) {
-    lastReportUs = now;
-  } else {
-    lastReportUs += HID_REPORT_PERIOD_US;
+  now = micros();
+  if (reportSchedule.due(now) && usbDs4.isReady()) {
+    if (!haveMotion || uint32_t(now - lastMotionUs) > 10000U) {
+      ds4Report.gyro_x = ds4Report.gyro_y = ds4Report.gyro_z = 0;
+      ++staleReports;
+    }
+    usbDs4.prepareReport(ds4Report, now, touched);
+    if (usbDs4.sendReport(ds4Report)) {
+      reportSchedule.sent(now);
+      if (submittedReports && uint32_t(now - lastSentUs) > longestSendGapUs)
+        longestSendGapUs = now - lastSentUs;
+      lastSentUs = now;
+      ++submittedReports;
+    }
   }
-  ++reportCounter;
-
-  const bool touched = touchSensor.readTouch();
-  ImuRawData motion;
-  imu.readFusedMotion(motion);
-
-  // Reverse Y and Z at the sensor-to-report mapping boundary.
-  float targetGyroX = (float)motion.gx;
-  float targetGyroY = -((float)motion.gz);
-  const float rawGyroZ = (float)motion.gy;
-  const float rawAccelX = (float)motion.ax;
-  const float rawAccelY = (float)motion.ay;
-  const float rawAccelZ = (float)motion.az;
-
-  // During startup, seed the history. Once three samples are available,
-  // median filtering rejects isolated spikes on roll and all accel axes.
-  float targetGyroZ = rawGyroZ;
-  float targetAccelX = rawAccelX;
-  float targetAccelY = rawAccelY;
-  float targetAccelZ = rawAccelZ;
-  if (spikeFilterSamples >= 2) {
-    targetGyroZ = medianOfThree(previousGyroZ2, previousGyroZ1, rawGyroZ);
-    targetAccelX = medianOfThree(previousAccelX2, previousAccelX1, rawAccelX);
-    targetAccelY = medianOfThree(previousAccelY2, previousAccelY1, rawAccelY);
-    targetAccelZ = medianOfThree(previousAccelZ2, previousAccelZ1, rawAccelZ);
-  }
-  previousGyroZ2 = previousGyroZ1;
-  previousGyroZ1 = rawGyroZ;
-  previousAccelX2 = previousAccelX1;
-  previousAccelX1 = rawAccelX;
-  previousAccelY2 = previousAccelY1;
-  previousAccelY1 = rawAccelY;
-  previousAccelZ2 = previousAccelZ1;
-  previousAccelZ1 = rawAccelZ;
-  if (spikeFilterSamples < 2) ++spikeFilterSamples;
-
-  // Drift correction and adaptive gyro smoothing run after axis mapping.
-  float gyroOutX, gyroOutY, gyroOutZ;
-  gyroFilter.process(targetGyroX, targetGyroY, targetGyroZ,
-                     gyroOutX, gyroOutY, gyroOutZ);
-  filteredGyroX = gyroOutX;
-  filteredGyroY = gyroOutY;
-  filteredGyroZ = gyroOutZ;
-
-  // Keep accelerometer initialization and smoothing unchanged.
-  if (!motionFilterInitialized) {
-    filteredAccelX = targetAccelX;
-    filteredAccelY = targetAccelY;
-    filteredAccelZ = targetAccelZ;
-    motionFilterInitialized = true;
-  } else {
-    filteredAccelX += 0.25f * (targetAccelX - filteredAccelX);
-    filteredAccelY += 0.25f * (targetAccelY - filteredAccelY);
-    filteredAccelZ += 0.25f * (targetAccelZ - filteredAccelZ);
-  }
-
-  // Y and Z were already inverted above; do not invert them again at HID output.
-  ds4Report.gyro_x = (int16_t)(filteredGyroX >= 0.0f ? filteredGyroX + 0.5f : filteredGyroX - 0.5f);
-  ds4Report.gyro_y = (int16_t)(filteredGyroY >= 0.0f ? filteredGyroY + 0.5f : filteredGyroY - 0.5f);
-  int32_t reportGyroZ = (int32_t)(filteredGyroZ >= 0.0f ? filteredGyroZ + 0.5f : filteredGyroZ - 0.5f);
-  if (reportGyroZ > 32767) reportGyroZ = 32767;
-  if (reportGyroZ < -32768) reportGyroZ = -32768;
-  ds4Report.gyro_z = (int16_t)reportGyroZ;
-
-  ds4Report.accel_x = (int16_t)(filteredAccelX >= 0.0f ? filteredAccelX + 0.5f : filteredAccelX - 0.5f);
-  ds4Report.accel_y = (int16_t)(filteredAccelY >= 0.0f ? filteredAccelY + 0.5f : filteredAccelY - 0.5f);
-  ds4Report.accel_z = (int16_t)(filteredAccelZ >= 0.0f ? filteredAccelZ + 0.5f : filteredAccelZ - 0.5f);
-
-  // Keep touch state independent from motion reporting.
-  ds4Report.finger1_id = (uint8_t)((touched ? 0x00 : 0x80) | (reportCounter & 0x7F));
-  if (touched) {
-    ds4Report.buttons3 |= 0x02;
-  } else {
-    ds4Report.buttons3 &= (uint8_t)~0x02;
-  }
-
-  ds4Report.timestamp = (uint16_t)now;
-  ds4Report.touch_track_num = (uint8_t)reportCounter;
-  usbDs4.sendReport(ds4Report);
+  serviceSerial();
 }

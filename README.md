@@ -1,49 +1,39 @@
-# DGB ICM45686 JSM
+# Dual ICM-45686 / DS4 test firmware
 
-Development workspace for adapting the original DGB Dual Gyro Button firmware to two ICM-45686 IMUs on the RP2040, preserving the original DGB wiring and JoyShockMapper-oriented USB behavior.
+Adapted from Saniro1/DGB-ICM45686-JSM, branch `test/gyro-noise-filter`, commit `ab3f7d79e88744dcabbde9cb6c49075cfc9095f5`. Original history and source archive are retained. Maintained sources in `firmware-overrides` replace the extracted archive files during builds.
 
-## Hardware constraints
+Target: Waveshare RP2040-Zero, two equally oriented ICM-45686 sensors. Wiring remains GP0 MISO, GP1 CS1, GP2 SCK, GP3 MOSI, GP5 CS2, GP9 touch send, GP12 touch receive, 3V3/GND.
 
-- Board: Waveshare RP2040-Zero / RP2040
-- Two ICM-45686 sensors share SPI0 with independent chip selects
-- GP0 MISO, GP1 IMU 1 CS, GP2 SCK, GP3 MOSI, GP5 IMU 2 CS
-- GP9 touch pulse, GP12 touch input
-- Preserve the original 3V3/GND arrangement
+## Corrections
 
-## Confirmed ICM-45686 facts
+- Per-sensor floating-point gyro bias measured only during an explicit stationary calibration window. Motion rejects the candidate; failed recalibration preserves prior offsets. Data-ready checks exclude repeated samples. Calibration is nonblocking.
+- Symmetric 80 Hz gyro smoothing preserves slow rotations. The previous automatic bias learner could erase slow yaw and create opposite residual drift; it has been removed.
+- Gyro and accelerometer share the same proper axis rotation `[x,-z,y]`, inherited from the latest gyro test. Both physical sensors must share mounting orientation. Confirm directions on your hardware.
+- Accelerometer conversion now supplies 8192 counts/g rather than 2048. Gravity is preserved. All report axes saturate safely.
+- DS4 timestamps now use 16/3 microsecond ticks rather than raw microseconds. The old encoding could make 1000 actual reports/s appear near 187.5 Hz to software deriving frequency from sensor timestamps.
+- Fixed 1000 microsecond report scheduling, 1 ms USB interrupt endpoint, correct DS4 status/touch offsets and calibration feature reports. Successful submissions advance sequence counters.
+- Touch measurements stop at their decision threshold instead of potentially spinning one million iterations. Serial diagnostics use bounded writes.
 
-- WHO_AM_I is 0xE9.
-- INT1_STATUS0 RESET_DONE is bit 7 (0x80); the uploaded source's bit value was correct.
-- SREG_CTRL is indirect register 0xA267; reset default selects little-endian sensor data.
-- IREG address setup at 0x7C/0x7D followed by reading 0x7E is consistent with TDK's transport driver. The uploaded source's burst-address sequence was not the problem.
-- ODR code 0x5 selects 1600 Hz for both accel and gyro.
-- Full-scale code 0x1 selects +/-2000 dps gyro and +/-16 g accel.
-- TDK's Arduino reference transport uses SPI mode 3 at 6 MHz by default; the datasheet supports mode 0 or 3 depending on the interface configuration.
+## Build and tests
 
-References:
-- TDK ICM-45686 datasheet: https://invensense.tdk.com/wp-content/uploads/documentation/DS-000577_ICM-45686.pdf
-- TDK Arduino driver: https://github.com/tdk-invn-oss/motion.arduino.ICM45686
+Linux x86_64 prerequisites: GCC/G++, Python3, curl, tar, sha256sum, unzip, patch. Run:
 
-## Current work
+```sh
+scripts/test-host.sh
+scripts/setup-toolchain.sh
+scripts/build-firmware.sh
+```
 
-Branch: `fix/tdk-verified-icm45686`
+Pinned toolchain: Arduino CLI 1.2.2, Arduino-Pico 5.4.4, bundled TinyUSB. Network access needs GitHub release destinations and downloads.arduino.cc. Output is `build/DGB_Firmware.ino.uf2`; the build verifies its UF2 structure. Host tests exercise real driver code against simulated SPI; they do not establish physical sensor performance.
 
-Patch: [patches/icm45686-driver-fix.patch](patches/icm45686-driver-fix.patch)
+## Calibration and hardware acceptance
 
-The patch:
-1. Aligns SPI mode and initial clock with TDK's Arduino reference.
-2. Preserves DRIVE_CONFIG0 and INTF_CONFIG1_OVRD across soft reset, following TDK's reset routine.
-3. Keeps the correct RESET_DONE bit and IREG access behavior.
-4. Prevents failed/uninitialized IMUs from being read, calibrated, or averaged as valid sensor data.
-5. Allows one valid sensor to be used temporarily for diagnosis if the other sensor fails.
+Place the device completely still before connecting it. Startup collects at least 1000 fresh samples per initialized sensor and at least one second of stable data. Initial gyro output stays neutral until calibration succeeds. Open the USB serial monitor at 115200 and send `?` for sensor/calibration status. Send `c` while completely stationary to recalibrate after warming up. Calibration times out after ten seconds; retry if it fails. Constant slow rotation about gravity cannot be reliably distinguished from zero-rate bias, so stationary placement is essential.
 
-The patch was checked to apply cleanly to the supplied ZIP source. All source translation units passed a host-side C++ syntax check using lightweight Arduino/SPI stubs. This is not a full Arduino-core build and does not prove the firmware works on the RP2040.
+Startup calibration measures gyro offsets only. Actual accelerometer offset/gain calibration requires six measured +X/-X/+Y/-Y/+Z/-Z gravity poses; no fabricated coefficients are applied. In each pose verify approximately 1 g total magnitude and the expected signed axis. Rotate about each axis independently and confirm gyro direction, then check warm stationary drift for several minutes.
 
-## Remaining validation
+1000 Hz is the requested firmware/endpoint rate, not yet a measured hardware result. Verify actual USB arrivals independently of the corrected DS4 sensor clock, using a host HID capture or USB analyzer. Check both sensors, touch held/released, and serial connected/disconnected. Queue statistics from `?` describe firmware submissions, not USB bus arrival times.
 
-- Audit and reconcile the inherited USB HID descriptor/report layout with the actual report bytes and the reference UF2.
-- Verify USB VID/PID and Windows enumeration, then JoyShockMapper detection.
-- Build with the exact RP2040 Arduino core and Adafruit TinyUSB versions.
-- Test both sensors independently, then dual-sensor fusion, touch gating, and 1000 Hz host reporting on hardware.
+## Validation status
 
-**Do not flash this patch as a verified UF2 yet.** It is the first source-level bring-up correction, not a hardware-tested release. Sensor ODR and USB report cadence are separate; 1600 Hz sensor ODR does not itself guarantee 1000 Hz USB reports.
+Host filter, DS4 descriptor/report/timestamp, and IMU calibration/fusion tests pass. Full target compilation and device testing remain pending because the current environment denies downloads.arduino.cc. No flashable release has been validated yet.
