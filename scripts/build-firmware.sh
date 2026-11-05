@@ -14,7 +14,11 @@ unzip -q "$DGB_REPO_DIR/DGB_Firmware_ICM45686_source.zip" -d "$staging"
 patch --batch -d "$staging" -p1 --forward < "$DGB_REPO_DIR/patches/icm45686-driver-fix.patch"
 cp "$DGB_REPO_DIR"/firmware-overrides/* "$staging/DGB_Firmware/"
 # Limit peak memory while allowing independent compilation units to run together.
-"$ARDUINO_CLI" compile \
+extra=()
+if [[ -n "${DGB_CTAGS_DIR:-}" ]]; then
+  extra+=(--build-property "runtime.tools.ctags.path=$DGB_CTAGS_DIR")
+fi
+"$ARDUINO_CLI" compile "${extra[@]}" \
   --fqbn rp2040:rp2040:waveshare_rp2040_zero:usbstack=tinyusb \
   --jobs "${DGB_BUILD_JOBS:-4}" \
   --warnings all \

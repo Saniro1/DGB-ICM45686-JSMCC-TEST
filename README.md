@@ -36,4 +36,4 @@ Startup calibration measures gyro offsets only. Actual accelerometer offset/gain
 
 ## Validation status
 
-Host filter, DS4 descriptor/report/timestamp, and IMU calibration/fusion tests pass. Full target compilation and device testing remain pending because the current environment denies downloads.arduino.cc. No flashable release has been validated yet.
+Host filter, DS4 descriptor/report/timestamp, and IMU calibration/fusion tests pass. Full target compilation and UF2 structural verification also pass using a locally built Arduino ctags tool. The experimental UF2 and build details are in `test firmwares/`. Physical device testing, including drift and actual USB arrival rate, remains pending.
