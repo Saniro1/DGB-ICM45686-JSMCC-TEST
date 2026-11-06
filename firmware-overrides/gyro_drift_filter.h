@@ -25,7 +25,8 @@ static_assert(GDF_CUTOFF_HZ > 0.0f, "Gyro cutoff must be positive");
 // deliberately the responsibility of the sensor calibration, not this filter.
 class GyroDriftFilter {
 public:
-  GyroDriftFilter() { reset(); }
+  explicit GyroDriftFilter(float cutoffHz = GDF_CUTOFF_HZ)
+      : cutoffHz_(cutoffHz > 0.0f && isfinite(cutoffHz) ? cutoffHz : GDF_CUTOFF_HZ) { reset(); }
 
   void reset() {
     lp_[0] = lp_[1] = lp_[2] = 0.0f;
@@ -46,7 +47,7 @@ public:
         seeded_ = true;
       } else {
         // Exact first-order time constant, independent of sample cadence.
-        const float alpha = 1.0f - expf(-6.28318530718f * GDF_CUTOFF_HZ *
+        const float alpha = 1.0f - expf(-6.28318530718f * cutoffHz_ *
                                         (static_cast<float>(elapsedUs) * 1.0e-6f));
         lp_[0] += alpha * (x - lp_[0]);
         lp_[1] += alpha * (y - lp_[1]);
@@ -60,6 +61,7 @@ public:
   }
 
 private:
+  const float cutoffHz_;
   float lp_[3];
   bool seeded_;
 };

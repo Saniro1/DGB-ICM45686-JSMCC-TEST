@@ -7,6 +7,7 @@
 #include <stdio.h>
 
 static GyroDriftFilter gyroFilter;
+static GyroDriftFilter accelFilter(40.0f);
 static DS4InputReport ds4Report;
 static uint32_t lastMotionUs, lastTouchUs, startedUs;
 static uint32_t submittedReports, freshSamples, staleReports, longestSendGapUs, lastSentUs;
@@ -89,9 +90,12 @@ void loop() {
     ds4Report.gyro_x = motionCount(gx);
     ds4Report.gyro_y = motionCount(gy);
     ds4Report.gyro_z = motionCount(gz);
-    ds4Report.accel_x = motionCount(accel.x);
-    ds4Report.accel_y = motionCount(accel.y);
-    ds4Report.accel_z = motionCount(accel.z);
+    // Low-pass acceleration noise, preserving gravity and unity DC gain.
+    float ax, ay, az;
+    accelFilter.process(accel.x, accel.y, accel.z, ax, ay, az, elapsed ? elapsed : 1U);
+    ds4Report.accel_x = motionCount(ax);
+    ds4Report.accel_y = motionCount(ay);
+    ds4Report.accel_z = motionCount(az);
     haveMotion = true;
   }
   const ImuCalibrationState state = imu.calibrationState();

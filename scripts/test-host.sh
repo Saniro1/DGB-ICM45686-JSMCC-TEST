@@ -11,3 +11,6 @@ g++ -std=c++17 -Wall -Wextra -Werror -Itests/imu_stubs -Ifirmware-overrides -I"$
 "$stage/gyro"
 "$stage/ds4"
 "$stage/imu"
+
+g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware-overrides tests/accel_filter_test.cpp -o "$stage/accel"
+"$stage/accel"
