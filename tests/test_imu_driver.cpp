@@ -79,7 +79,7 @@ static void near(float actual, float expected, float epsilon = 0.002f) {
 static void calibrate(DualIcm45686 &driver, bool second = true) {
   driver.startCalibration();
   ImuMotionData sample;
-  for (int n = 0; n < 1000; ++n) {
+  for (int n = 0; n < 2000; ++n) {
     clockUs += 1000;
     feed(0, 10 + n % 2, -20, 6, 2048, 0, 0); // Resting on X face.
     if (second) feed(1, -30, 40 + n % 2, -8, 2048, 0, 0);

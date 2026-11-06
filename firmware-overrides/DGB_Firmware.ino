@@ -8,7 +8,6 @@
 
 static GyroDriftFilter gyroFilter;
 static DS4InputReport ds4Report;
-static ReportSchedule reportSchedule;
 static uint32_t lastMotionUs, lastTouchUs, startedUs;
 static uint32_t submittedReports, freshSamples, staleReports, longestSendGapUs, lastSentUs;
 static bool touched, haveMotion;
@@ -67,7 +66,6 @@ void setup() {
   imu.begin();
   usbDs4.initializeReport(ds4Report);
   startedUs = lastMotionUs = lastTouchUs = micros();
-  reportSchedule.reset(startedUs);
   imu.startCalibration();
   queueStatus();
 }
@@ -107,14 +105,15 @@ void loop() {
     lastTouchUs = now;
   }
   now = micros();
-  if (reportSchedule.due(now) && usbDs4.isReady()) {
+  // The 1 ms interrupt endpoint is the clock. Queue immediately whenever its
+  // previous transfer completes; a second software timer can miss USB frames.
+  if (usbDs4.isReady()) {
     if (!haveMotion || uint32_t(now - lastMotionUs) > 10000U) {
       ds4Report.gyro_x = ds4Report.gyro_y = ds4Report.gyro_z = 0;
       ++staleReports;
     }
     usbDs4.prepareReport(ds4Report, now, touched);
     if (usbDs4.sendReport(ds4Report)) {
-      reportSchedule.sent(now);
       if (submittedReports && uint32_t(now - lastSentUs) > longestSendGapUs)
         longestSendGapUs = now - lastSentUs;
       lastSentUs = now;

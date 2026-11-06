@@ -14,7 +14,7 @@ namespace {
 constexpr uint8_t kInt1Config0 = 0x16;
 constexpr uint8_t kDataReadyBit = 0x04;
 constexpr uint32_t kCalibrationTimeoutUs = 10000000;
-constexpr uint32_t kCalibrationWindowUs = 1000000;
+constexpr uint32_t kCalibrationWindowUs = 2000000;
 
 int16_t saturatedCount(float value) {
   if (value >= 32767.0f) return 32767;
